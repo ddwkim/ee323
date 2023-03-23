@@ -190,7 +190,7 @@ int main(int argc, char *argv[]) {
           exit(EXIT_FAILURE);
         }
         sent += MAX_STRING_SIZE;
-        fprintf(stderr, "Message sent real %d\n", req_sent);
+        debug_print("Message sent real %d\n", req_sent);
 
         res_recv = MAX_MSG_SIZE;
         if ((recvall(sockfd, message, &res_recv)) < 0) {
