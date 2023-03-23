@@ -183,14 +183,14 @@ int main(int argc, char *argv[]) {
       req_sent = MAX_MSG_SIZE;
       for (int i = 0; i < n; i++) {
         build_message(message, sent, MAX_STRING_SIZE, operation, shift);
-        debug_print("Message built %d\n", MAX_MSG_SIZE);
+        DEBUG_PRINT("Message built %d\n", MAX_MSG_SIZE);
         if ((sendall(sockfd, message, &req_sent)) < 0) {
           perror("sendall");
-          debug_print("sent %d bytes\n", req_sent);
+          fprintf(stderr, "sent %d bytes\n", req_sent);
           exit(EXIT_FAILURE);
         }
         sent += MAX_STRING_SIZE;
-        debug_print("Message sent real %d\n", req_sent);
+        DEBUG_PRINT("Message sent real %d\n", req_sent);
 
         res_recv = MAX_MSG_SIZE;
         if ((recvall(sockfd, message, &res_recv)) < 0) {
@@ -199,7 +199,7 @@ int main(int argc, char *argv[]) {
           exit(EXIT_FAILURE);
         }
         parse_message(message, write, &res_recv, &operation, &shift);
-        debug_print("Message received real %d\n", res_recv);
+        DEBUG_PRINT("Message received real %d\n", res_recv);
 
         write += res_recv - HEADER_SIZE;
       }
@@ -220,7 +220,7 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
       }
       sent += r;
-      debug_print("Message sent real %d\n", req_sent);
+      DEBUG_PRINT("Message sent real %d\n", req_sent);
 
       res_recv = r + HEADER_SIZE;
       if ((recvall(sockfd, message, &res_recv)) < 0) {
@@ -229,7 +229,7 @@ int main(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
       }
       parse_message(message, write, &res_recv, &operation, &shift);
-      debug_print("Message received real %d\n", res_recv);
+      DEBUG_PRINT("Message received real %d\n", res_recv);
       write += res_recv - HEADER_SIZE;
     }
 

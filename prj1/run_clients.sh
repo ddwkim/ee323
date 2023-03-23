@@ -1,6 +1,6 @@
 #!/bin/bash
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
-FSIZE=50M
+FSIZE=9M
 NUM_CLI=50
 HOST=localhost
 PORT=12000
@@ -9,7 +9,8 @@ SH=5
 # clean
 for ((i=0;i<$NUM_CLI;i++))
 do
-    if [[ -f results/${FSIZE}_$i.txt ]]; then
+    mkdir -p $SCRIPT_DIR/results
+    if [[ -f $SCRIPT_DIR/results/${FSIZE}_$i.txt ]]; then
         rm results/${FSIZE}_$i.txt
     fi
 done

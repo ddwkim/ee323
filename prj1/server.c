@@ -49,6 +49,13 @@ void reset_client_data(ConnectionInfo *client_data) {
   client_data->processed = 0;
 }
 
+void cleanup_and_close(ConnectionInfo *client_data, struct epoll_event *event,
+                       int epoll_fd, int fd) {
+  reset_client_data(client_data);
+  epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL);
+  close(fd);
+}
+
 int handle_client(ConnectionInfo *client_data, struct epoll_event *event,
                   int epoll_fd) {
   int fd = client_data->client_fd;
@@ -68,15 +75,11 @@ int handle_client(ConnectionInfo *client_data, struct epoll_event *event,
           break;
         } else {
           perror("recv header");
-          reset_client_data(client_data);
-          epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL);
-          close(fd);
+          cleanup_and_close(client_data, event, epoll_fd, fd);
           return -1;
         }
       } else if (count == 0) {
-        reset_client_data(client_data);
-        epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL);
-        close(fd);
+        cleanup_and_close(client_data, event, epoll_fd, fd);
         return -1;
       }
 
@@ -87,25 +90,21 @@ int handle_client(ConnectionInfo *client_data, struct epoll_event *event,
         client_data->op = ntohs(*((uint16_t *)msg));
         client_data->shift = ntohs(*((uint16_t *)(msg + 2)));
         *msg_size = ntohl(*((uint32_t *)(msg + 4)));
-        debug_print("op : %d, shift : %d, msg_size : %d\n", client_data->op,
+        DEBUG_PRINT("op : %d, shift : %d, msg_size : %d\n", client_data->op,
                     client_data->shift, *msg_size);
 
         if (*msg_size > MAX_MSG_SIZE) {
-          debug_print(
+          DEBUG_PRINT(
               "Message too large, should be less than 10MB : received %d\n",
               *msg_size);
-          reset_client_data(client_data);
-          epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL);
-          close(fd);
+          cleanup_and_close(client_data, event, epoll_fd, fd);
           return -1;
         }
 
         if (client_data->op != 0 && client_data->op != 1) {
-          debug_print("Invalid operation, should be 0 or 1 : received %d\n",
+          DEBUG_PRINT("Invalid operation, should be 0 or 1 : received %d\n",
                       client_data->op);
-          reset_client_data(client_data);
-          epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL);
-          close(fd);
+          cleanup_and_close(client_data, event, epoll_fd, fd);
           return -1;
         }
       }
@@ -114,22 +113,18 @@ int handle_client(ConnectionInfo *client_data, struct epoll_event *event,
     // Header received, Keep reading until we have a full message
     if (*msg_size > 0 && *bytes_recv < *msg_size) {
       ssize_t count = recv(fd, msg + *bytes_recv, *msg_size - *bytes_recv, 0);
-      debug_print("bytes_recv : % d\n", *bytes_recv);
+      DEBUG_PRINT("bytes_recv : % d\n", *bytes_recv);
 
       if (count == -1) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
           break;
         } else {
           perror("recv content");
-          reset_client_data(client_data);
-          epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL);
-          close(fd);
+          cleanup_and_close(client_data, event, epoll_fd, fd);
           return -1;
         }
       } else if (count == 0) {
-        reset_client_data(client_data);
-        epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL);
-        close(fd);
+        cleanup_and_close(client_data, event, epoll_fd, fd);
         return -1;
       }
 
@@ -139,7 +134,7 @@ int handle_client(ConnectionInfo *client_data, struct epoll_event *event,
     // Process the message
     else if (*msg_size > 0 && *bytes_recv == *msg_size &&
              client_data->processed == 0) {
-      debug_print("Processing message of size %d\n", *msg_size);
+      DEBUG_PRINT("Processing message of size %d\n", *msg_size);
       caesar_cipher(msg, *msg_size, client_data->shift, client_data->op);
       client_data->processed = 1;
       // msg[*msg_size] = '\0';
@@ -151,9 +146,7 @@ int handle_client(ConnectionInfo *client_data, struct epoll_event *event,
       event->events = EPOLLOUT | EPOLLET;
       if (epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, event) == -1) {
         perror("epoll_ctl change mode to out");
-        reset_client_data(client_data);
-        epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL);
-        close(fd);
+        cleanup_and_close(client_data, event, epoll_fd, fd);
         return -1;
       }
     }
@@ -166,20 +159,16 @@ int handle_client(ConnectionInfo *client_data, struct epoll_event *event,
           break;
         } else {
           perror("send");
-          reset_client_data(client_data);
-          epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL);
-          close(fd);
+          cleanup_and_close(client_data, event, epoll_fd, fd);
           return -1;
         }
       } else if (count == 0) {
-        reset_client_data(client_data);
-        epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL);
-        close(fd);
+        cleanup_and_close(client_data, event, epoll_fd, fd);
         return -1;
       }
 
       *bytes_sent += count;
-      debug_print("bytes_sent : %d\n", *bytes_sent);
+      DEBUG_PRINT("bytes_sent : %d\n", *bytes_sent);
     }
 
     if (*bytes_sent == *msg_size) {
@@ -188,8 +177,7 @@ int handle_client(ConnectionInfo *client_data, struct epoll_event *event,
       event->events = EPOLLIN | EPOLLET;
       if (epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, event) == -1) {
         perror("epoll_ctl : change mode to in");
-        epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL);
-        close(fd);
+        cleanup_and_close(client_data, event, epoll_fd, fd);
         return -1;
       }
       break;
@@ -336,11 +324,11 @@ int main(int argc, char *argv[]) {
           perror("epoll_ctl add client");
           close(client_fd);
         }
-        debug_print("client connected: %d\n", client_fd);
+        DEBUG_PRINT("client connected: %d\n", client_fd);
 
         int empty_slot = get_empty(client_to_fd);
         if (empty_slot < 0) {
-          debug_print("too many clients for %d\n", client_fd);
+          DEBUG_PRINT("too many clients for %d\n", client_fd);
           close(client_fd);
           continue;
         }
@@ -350,7 +338,7 @@ int main(int argc, char *argv[]) {
       } else {
         int slot = get_slot_by_fd(client_to_fd, events[i].data.fd);
         if (slot < 0) {
-          debug_print("client not found: %d\n", events[i].data.fd);
+          DEBUG_PRINT("client not found: %d\n", events[i].data.fd);
           continue;
         }
         if (handle_client(&client_data[slot], &events[i], epollfd) < 0) {
