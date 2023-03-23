@@ -1,18 +1,3 @@
-// Your server should receive the required information through the command line
-// parameters. An example usage of the server program should look like this:$
-// ./server -p 1234 Unlike the client, when you run your server, you should be
-// able to set the server’s port number manually. In fact, it is very natural
-// that by setting the server’s port number with the desired value we can
-// advertise the port number to the clients out there. You must follow this
-// command line parameters format and binary name (which is ‘server’). The
-// server program listens to incoming connection requests and then accepts them.
-// Once the server program receives a string from the client, the server
-// performs the Caesar cipher on this string and sends the resulting message
-// back to the client. Your server program must be able to handle multiple
-// connections in parallel (up to 50). You have several options for this
-// requirement, like fork() or select()/epoll(). Your server should reject
-// connections from clients that violate the protocol.
-
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
@@ -25,11 +10,10 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#define BUFSIZE 1024
-#define MAX_MSG_SIZE 10000000
-#define HEADER_SIZE 8
+#include "common.h"
+
 #define MAX_EVENTS 50
-#define BACKLOG 10
+#define BACKLOG 1024
 
 typedef struct {
   int client_fd;
@@ -38,6 +22,7 @@ typedef struct {
   uint32_t msg_size;
   uint32_t bytes_recv;
   uint32_t bytes_sent;
+  uint16_t processed;
   char *msg;
 } ConnectionInfo;
 
@@ -46,7 +31,7 @@ void caesar_cipher(char *buffer, uint32_t len, uint16_t shift, uint16_t op) {
     shift = 26 - shift;
   }
 
-  for (int i = HEADER_SIZE - 1; i < len; i++) {
+  for (int i = HEADER_SIZE; i < len; i++) {
     if (buffer[i] >= 'A' && buffer[i] <= 'Z') {
       buffer[i] = ((buffer[i] - 'A' + shift) % 26) + 'a';
     } else if (buffer[i] >= 'a' && buffer[i] <= 'z') {
@@ -61,10 +46,11 @@ void reset_client_data(ConnectionInfo *client_data) {
   client_data->msg_size = 0;
   client_data->bytes_recv = 0;
   client_data->bytes_sent = 0;
+  client_data->processed = 0;
 }
 
-void handle_client(ConnectionInfo *client_data, struct epoll_event *event,
-                   int epoll_fd) {
+int handle_client(ConnectionInfo *client_data, struct epoll_event *event,
+                  int epoll_fd) {
   int fd = client_data->client_fd;
   char *msg = client_data->msg;
   uint32_t *msg_size = &(client_data->msg_size);
@@ -73,6 +59,7 @@ void handle_client(ConnectionInfo *client_data, struct epoll_event *event,
 
   while (1) {
     // Keep reading until we have a full header
+
     if (*bytes_recv < HEADER_SIZE) {
       ssize_t count = recv(fd, msg + *bytes_recv, HEADER_SIZE - *bytes_recv, 0);
 
@@ -80,15 +67,17 @@ void handle_client(ConnectionInfo *client_data, struct epoll_event *event,
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
           break;
         } else {
-          perror("recv");
-          close(fd);
+          perror("recv header");
           reset_client_data(client_data);
-          return;
+          epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL);
+          close(fd);
+          return -1;
         }
       } else if (count == 0) {
-        close(fd);
         reset_client_data(client_data);
-        return;
+        epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL);
+        close(fd);
+        return -1;
       }
 
       *bytes_recv += count;
@@ -98,12 +87,26 @@ void handle_client(ConnectionInfo *client_data, struct epoll_event *event,
         client_data->op = ntohs(*((uint16_t *)msg));
         client_data->shift = ntohs(*((uint16_t *)(msg + 2)));
         *msg_size = ntohl(*((uint32_t *)(msg + 4)));
+        debug_print("op : %d, shift : %d, msg_size : %d\n", client_data->op,
+                    client_data->shift, *msg_size);
 
         if (*msg_size > MAX_MSG_SIZE) {
-          fprintf(stderr, "Message too large\n");
-          close(fd);
+          debug_print(
+              "Message too large, should be less than 10MB : received %d\n",
+              *msg_size);
           reset_client_data(client_data);
-          return;
+          epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL);
+          close(fd);
+          return -1;
+        }
+
+        if (client_data->op != 0 && client_data->op != 1) {
+          debug_print("Invalid operation, should be 0 or 1 : received %d\n",
+                      client_data->op);
+          reset_client_data(client_data);
+          epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL);
+          close(fd);
+          return -1;
         }
       }
     }
@@ -111,77 +114,89 @@ void handle_client(ConnectionInfo *client_data, struct epoll_event *event,
     // Header received, Keep reading until we have a full message
     if (*msg_size > 0 && *bytes_recv < *msg_size) {
       ssize_t count = recv(fd, msg + *bytes_recv, *msg_size - *bytes_recv, 0);
+      debug_print("bytes_recv : % d\n", *bytes_recv);
 
       if (count == -1) {
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
           break;
         } else {
-          perror("recv");
-          close(fd);
+          perror("recv content");
           reset_client_data(client_data);
-          return;
+          epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL);
+          close(fd);
+          return -1;
         }
       } else if (count == 0) {
-        close(fd);
         reset_client_data(client_data);
-        return;
+        epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL);
+        close(fd);
+        return -1;
       }
 
       *bytes_recv += count;
     }
 
     // Process the message
-    else if (*msg_size > 0 && *bytes_recv == *msg_size) {
+    else if (*msg_size > 0 && *bytes_recv == *msg_size &&
+             client_data->processed == 0) {
+      debug_print("Processing message of size %d\n", *msg_size);
       caesar_cipher(msg, *msg_size, client_data->shift, client_data->op);
+      client_data->processed = 1;
+      // msg[*msg_size] = '\0';
+      // fprintf(stderr, "%s", (msg + HEADER_SIZE));
+
       *bytes_sent = 0;
 
       // Modify the event to monitor for output readiness
       event->events = EPOLLOUT | EPOLLET;
-      if (epoll_ctl(epoll_fd, EPOLL_CTL_MOD, client_data->client_fd, event) ==
-          -1) {
-        perror("epoll_ctl");
+      if (epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, event) == -1) {
+        perror("epoll_ctl change mode to out");
         reset_client_data(client_data);
+        epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL);
         close(fd);
-        return;
-      }
-    }
-    ssize_t count =
-        send(fd, client_data->msg + *bytes_sent, *msg_size - *bytes_sent, 0);
-    if (count == -1) {
-      if (errno == EAGAIN || errno == EWOULDBLOCK) {
-        // Modify the event to monitor for output readiness
-        event->events = EPOLLOUT | EPOLLET;
-        if (epoll_ctl(epoll_fd, EPOLL_CTL_MOD, client_data->client_fd, event) ==
-            -1) {
-          perror("epoll_ctl");
-          reset_client_data(client_data);
-          close(fd);
-          return;
-        }
-        break;
-      } else {
-        perror("send");
-        reset_client_data(client_data);
-        close(fd);
-        return;
+        return -1;
       }
     }
 
-    *bytes_sent += count;
+    if (client_data->processed == 1 && *bytes_sent < *msg_size) {
+      ssize_t count =
+          send(fd, client_data->msg + *bytes_sent, *msg_size - *bytes_sent, 0);
+      if (count == -1) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+          break;
+        } else {
+          perror("send");
+          reset_client_data(client_data);
+          epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL);
+          close(fd);
+          return -1;
+        }
+      } else if (count == 0) {
+        reset_client_data(client_data);
+        epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL);
+        close(fd);
+        return -1;
+      }
+
+      *bytes_sent += count;
+      debug_print("bytes_sent : %d\n", *bytes_sent);
+    }
+
     if (*bytes_sent == *msg_size) {
+      reset_client_data(client_data);
       // sending finished, modify the event to monitor for input readiness
       event->events = EPOLLIN | EPOLLET;
-      if (epoll_ctl(epoll_fd, EPOLL_CTL_MOD, client_data->client_fd, event) ==
-          -1) {
-        perror("epoll_ctl");
-        reset_client_data(client_data);
+      if (epoll_ctl(epoll_fd, EPOLL_CTL_MOD, fd, event) == -1) {
+        perror("epoll_ctl : change mode to in");
+        epoll_ctl(epoll_fd, EPOLL_CTL_DEL, fd, NULL);
         close(fd);
-        return;
+        return -1;
       }
-      reset_client_data(client_data);
       break;
     }
   }
+
+  return 0;
 }
 
 void setnonblocking(int sock) {
@@ -197,6 +212,29 @@ void setnonblocking(int sock) {
     perror("fcntl(F_SETFL)");
     exit(1);
   }
+}
+
+int get_empty(int32_t *event_to_fd) {
+  for (int i = 0; i < MAX_EVENTS; i++) {
+    if (event_to_fd[i] == -1) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+int get_slot_by_fd(int32_t *event_to_fd, int fd) {
+  for (int i = 0; i < MAX_EVENTS; i++) {
+    if (event_to_fd[i] == fd) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+int set_slot_by_fd(int32_t *event_to_fd, int fd, int slot) {
+  event_to_fd[slot] = fd;
+  return 0;
 }
 
 int main(int argc, char *argv[]) {
@@ -221,48 +259,56 @@ int main(int argc, char *argv[]) {
   int sockfd;
   if ((sockfd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) < 0) {
     perror("socket");
-    exit(1);
+    exit(EXIT_FAILURE);
   }
 
   int yes = 1;
   if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) == -1) {
     perror("setsockopt");
     close(sockfd);
-    exit(1);
+    exit(EXIT_FAILURE);
   }
 
   struct sockaddr_in saddr;
   memset(&saddr, 0, sizeof(saddr));
   saddr.sin_family = AF_INET;
-  saddr.sin_addr.s_addr = INADDR_ANY;
+  saddr.sin_addr.s_addr = htonl(INADDR_ANY);
   saddr.sin_port = htons(port);
   if (bind(sockfd, (struct sockaddr *)&saddr, sizeof(saddr)) < 0) {
     perror("bind");
-    exit(1);
+    exit(EXIT_FAILURE);
   }
 
   if (listen(sockfd, BACKLOG) < 0) {
     perror("listen");
-    exit(1);
+    exit(EXIT_FAILURE);
   }
 
   int epollfd = epoll_create1(0);
   if (epollfd == -1) {
     perror("epoll_create1");
-    exit(1);
+    exit(EXIT_FAILURE);
   }
 
   struct epoll_event ev, events[MAX_EVENTS];
   ev.events = EPOLLIN;
   ev.data.fd = sockfd;
   if (epoll_ctl(epollfd, EPOLL_CTL_ADD, sockfd, &ev) == -1) {
-    perror("epoll_ctl: listen_sock");
-    exit(1);
+    perror("epoll_ctl listen_sock");
+    exit(EXIT_FAILURE);
   }
 
   ConnectionInfo client_data[MAX_EVENTS] = {0};
   for (int i = 0; i < MAX_EVENTS; i++) {
-    client_data->msg = malloc(MAX_MSG_SIZE);
+    client_data[i].msg = malloc(MAX_MSG_SIZE);
+    if (client_data[i].msg == NULL) {
+      perror("malloc");
+      exit(EXIT_FAILURE);
+    }
+  }
+  int32_t client_to_fd[MAX_EVENTS];
+  for (int i = 0; i < MAX_EVENTS; i++) {
+    client_to_fd[i] = -1;
   }
 
   while (1) {
@@ -287,17 +333,34 @@ int main(int argc, char *argv[]) {
         ev.data.fd = client_fd;
         ev.events = EPOLLIN | EPOLLET;
         if (epoll_ctl(epollfd, EPOLL_CTL_ADD, client_fd, &ev) == -1) {
-          perror("epoll_ctl");
+          perror("epoll_ctl add client");
           close(client_fd);
         }
+        debug_print("client connected: %d\n", client_fd);
 
-        client_data[client_fd].client_fd = client_fd;
+        int empty_slot = get_empty(client_to_fd);
+        if (empty_slot < 0) {
+          debug_print("too many clients for %d\n", client_fd);
+          close(client_fd);
+          continue;
+        }
+
+        client_data[empty_slot].client_fd = client_fd;
+        set_slot_by_fd(client_to_fd, client_fd, empty_slot);
       } else {
-        handle_client(&client_data[events[i].data.fd], &events[i], epollfd);
+        int slot = get_slot_by_fd(client_to_fd, events[i].data.fd);
+        if (slot < 0) {
+          debug_print("client not found: %d\n", events[i].data.fd);
+          continue;
+        }
+        if (handle_client(&client_data[slot], &events[i], epollfd) < 0) {
+          client_to_fd[slot] = -1;
+        };
       }
     }
   }
 
+  // clean up
   for (int i = 0; i < MAX_EVENTS; i++) {
     free(client_data[i].msg);
   }
