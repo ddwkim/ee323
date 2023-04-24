@@ -8,5 +8,9 @@
         "string.h": "c",
         "types.h": "c"
     },
-    "C_Cpp.default.compilerPath": "/usr/bin/gcc"
+    "C_Cpp.default.compilerPath": "/usr/bin/gcc",
+    "clang-format.language.c.style": "Google",
+    "clang-format.language.cpp.style": "Google",
+    "clang-format.style": "Google",
+    "C_Cpp.formatting": "clangFormat"
 }

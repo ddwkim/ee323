@@ -64,5 +64,9 @@ dkms.conf
 # Built Visual Studio Code Extensions
 *.vsix
 
+*/*_assign*
+
 /prj1/results
 /prj1/sample/*/*M.txt
+
+/prj2/etc

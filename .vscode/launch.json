@@ -8,16 +8,9 @@
             "name": "(gdb) Launch",
             "type": "cppdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/prj1/client",
+            "program": "${workspaceFolder}/prj2/proxy",
             "args": [
-                "-h",
-                "143.248.152.10",
-                "-p",
-                "12000",
-                "-o",
-                "0",
-                "-s",
-                "2"
+                "8000",
             ],
             "stopAtEntry": false,
             "cwd": "${fileDirname}",
