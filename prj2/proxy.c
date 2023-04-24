@@ -1,37 +1,3 @@
-// Step 1-1. Starting Your Proxy: Listen for Incoming Connections
-// When your proxy starts, establish a socket connection to listen for incoming
-// connections. Your proxy should listen on the port specified from the command
-// line, and wait for incoming client connections. Once a client has connected,
-// the proxy should read data from the client and then check for a properly
-// formatted HTTP request. An invalid request from the client should be answered
-// with an appropriate error code. You should return formatted error message
-// (400 Bad Request) in the following cases: When a request from a client does
-// NOT have a “host” header field. This is because some web servers require the
-// “host” http header,  so it is better to add this header whenever making a
-// request. When HTTP methods other than “GET” are used while requesting data.
-// This does not mean that HTTP version 1.0 cannot use other methods. We
-// simplified the assignment for your convenience. When different HTTP versions
-// (other than v1.0)  are used while requesting data. When invalid “host” header
-// fields are passed (hint: use gethostbyname() to check if the host name is
-// invalid).
-
-// Step 1-2. Parse the URL
-// Once the proxy sees a valid HTTP request, it will need to parse the requested
-// URL. The proxy needs at most three pieces of information: (i) the requested
-// host, (ii) the requested port, and (iii) the requested path. Following
-// functions would be helpful for this task.
-
-// Step 2. Get Data from the Remote Server
-// Once the proxy has parsed the URL, it can make a connection to the requested
-// host. When making a connection, use the appropriate remote port, or the
-// default of 80 if none is specified. The proxy then sends the HTTP request
-// that it received from the client to the remote server.
-
-// Step 3. Transfer Response of the Server to the Client
-// After the response from the remote server is received, the proxy should send
-// the response message to the client via the appropriate socket. Close the
-// connection once the transaction is complete.
-
 #include <errno.h>
 #include <fcntl.h>
 #include <netdb.h>
@@ -72,6 +38,7 @@ int main(int argc, char *argv[]) {
       fprintf(stderr, "Failed to read urls from file");
       exit(EXIT_FAILURE);
     }
+    DEBUG_PRINT("black_url_count: %zu\n", black_url_count);
   }
 
   int sockfd;
@@ -135,30 +102,39 @@ int main(int argc, char *argv[]) {
         }
         setnonblocking(client_fd);
 
-        ev.data.fd = client_fd;
         ev.events = EPOLLIN | EPOLLET;
 
         proxy_data_t *data = calloc(1, sizeof(proxy_data_t));
+        fd_data_t *client_fd_data = calloc(1, sizeof(fd_data_t));
+        client_fd_data->fd = client_fd;
+        client_fd_data->data = data;
         data->client_fd = client_fd;
+        data->client_fd_data = client_fd_data;
+        data->server_fd = -1;
         data->state |= CLIENT_OPEN;
         data->state |= REQUEST_NOT_RECEIVED;
-        ev.data.ptr = data;
+        data->black_urls = black_urls;
+        data->black_urls_count = black_url_count;
+
+        ev.data.ptr = client_fd_data;
 
         if (epoll_ctl(epollfd, EPOLL_CTL_ADD, client_fd, &ev) == -1) {
           perror("epoll_ctl add client");
           close(client_fd);
           free(data);
+          free(client_fd_data);
           break;
-        }
-        DEBUG_PRINT("client connected: %d\n", client_fd);
+        } else {
+          DEBUG_PRINT("client connected: %d\n", client_fd);
+        };
 
       } else {
-        proxy_data_t *data = (proxy_data_t *)events[i].data.ptr;
-        if (data->client_fd == events[i].data.fd) {
-          handle_client(data, &events[i], epollfd);
+        fd_data_t *fd_data = (fd_data_t *)events[i].data.ptr;
+        if (fd_data->data->client_fd == fd_data->fd) {
+          handle_client(fd_data->data, &events[i], epollfd);
         }
-        if (data->server_fd == events[i].data.fd) {
-          handle_server(data, &events[i], epollfd);
+        if (fd_data->data->server_fd == fd_data->fd) {
+          handle_server(fd_data->data, &events[i], epollfd);
         }
       }
     }
