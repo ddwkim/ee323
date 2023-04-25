@@ -109,7 +109,7 @@ int handle_client(proxy_data_t *data, struct epoll_event *event, int epoll_fd) {
         *state |= SERVER_OPEN;
 
         // register to epoll
-        fd_data_t *server_fd_data = malloc(sizeof(fd_data_t));
+        fd_data_t *server_fd_data = calloc(1, sizeof(fd_data_t));
         data->server_fd_data = server_fd_data;
         server_fd_data->fd = data->server_fd;
         server_fd_data->data = data;
